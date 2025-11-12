@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "606340091565",
+    "firebase_url": "https://daewooteam5-432ae-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "daewooteam5-432ae",
+    "storage_bucket": "daewooteam5-432ae.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:606340091565:android:0190261538ae0267e64024",
+        "android_client_info": {
+          "package_name": "daewoo.t5.hotelly"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "606340091565-bn748l80pcoj3mlehgdsnd528qmltfo0.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAWH-myfSacy3tIsAdf8eJMfMNh428NjmM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "606340091565-bn748l80pcoj3mlehgdsnd528qmltfo0.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
