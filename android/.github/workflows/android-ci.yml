@@ -1,0 +1,70 @@
+name: Android CI
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Install Android SDK command-line tools
+        id: install_sdk
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+        run: |
+          set -eux
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          # download commandlinetools (versioned url; if it breaks, update to latest from Google)
+          curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o /tmp/cmdline.zip
+          unzip -q /tmp/cmdline.zip -d /tmp/cmdline
+          rm /tmp/cmdline.zip
+          # Move unpacked cmdline-tools into the expected layout: $ANDROID_SDK_ROOT/cmdline-tools/latest
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          if [ -d "/tmp/cmdline/cmdline-tools" ]; then
+            mv /tmp/cmdline/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          else
+            mv /tmp/cmdline "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          fi
+          rm -rf /tmp/cmdline || true
+
+      - name: Install Android SDK packages (platforms & build-tools)
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          PATH: ${{ runner.temp }}/android-sdk/cmdline-tools/latest/bin:${{ runner.temp }}/android-sdk/platform-tools:${{ env.PATH }}
+        run: |
+          set -eux
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build with Gradle
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          JAVA_HOME: ${{ env.JAVA_HOME_11_X64 }}
+          PATH: ${{ runner.temp }}/android-sdk/platform-tools:${{ env.PATH }}
+        run: |
+          set -eux
+          ./gradlew build --no-daemon --stacktrace
