@@ -1,19 +1,28 @@
 package daewoo.t5.hotelly
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log // Log import 확인!
 import android.webkit.JavascriptInterface
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.addCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.databinding.DataBindingUtil
@@ -21,6 +30,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.messaging.FirebaseMessaging
 import daewoo.t5.hotelly.databinding.ActivityMainBinding
 import daewoo.t5.hotelly.utils.Constant
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,7 +38,7 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val FILE_CHOOSER_REQUEST_CODE = 1000
     private val NOTIFICATION_PERMISSION_REQUEST_CODE = 2000
-
+    private var lastScrollTop: Int = 0
     inner class WebAppInterface {
         /**
          * 이 함수가 호출되면, 웹뷰는 이 코드가
@@ -38,10 +48,54 @@ class MainActivity : AppCompatActivity() {
         fun isAndroidApp(): Boolean {
             return true
         }
+        @JavascriptInterface
+        fun updateScrollPosition(scrollTop: Int) {
+            lastScrollTop = scrollTop
+        }
+    }
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permission = android.Manifest.permission.POST_NOTIFICATIONS
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(permission), NOTIFICATION_PERMISSION_REQUEST_CODE)
+            } else {
+//                // 이미 허용됨 → 알림 테스트 가능
+//                showNotificationExample()
+            }
+        }
     }
     // 토큰 저장할 변수
     private var fcmToken: String? = null
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // 허용됨
+                showNotificationExample()
+            } else {
+                // 거부됨 → 안내
+                AlertDialog.Builder(this)
+                    .setTitle("알림 권한 필요")
+                    .setMessage("앱 알림을 받으려면 권한이 필요합니다. 설정에서 허용해 주세요.")
+                    .setPositiveButton("설정으로 이동") { _, _ ->
+                        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        startActivity(intent)
+                    }
+                    .setNegativeButton("취소", null)
+                    .show()
+            }
+        }
+    }
 
+    // 알림 테스트용 함수 (원하면 FCM 알림 연동 가능)
+    private fun showNotificationExample() {
+        Toast.makeText(this, "알림 권한 허용됨!", Toast.LENGTH_SHORT).show()
+    }
     // 토큰을 웹뷰로 쏘는 공통 함수
     private fun sendTokenToWebView(token: String) {
         Log.d("WebViewBridge", "Sending token to WebView: $token")
@@ -53,10 +107,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        binding = DataBindingUtil.setContentView(this, R.layout.activity_main)
         WebView.setWebContentsDebuggingEnabled(true)
         enableEdgeToEdge()
-        binding = DataBindingUtil.setContentView(this, R.layout.activity_main)
-
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 3000)
+        }
+        requestNotificationPermission()
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -123,11 +180,12 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: android.webkit.WebResourceRequest?
+                    view: WebView,
+                    request: WebResourceRequest
                 ): Boolean {
-                    Log.d("WebView", "Loading URL: ${request?.url}")
-                    return false
+                    val url = request.url.toString()
+                    Log.d("WebView", "Loading URL: $url")
+                    return handleUrl(url)
                 }
             }
 
@@ -145,23 +203,52 @@ class MainActivity : AppCompatActivity() {
                     filePathCallback: ValueCallback<Array<Uri>>?,
                     fileChooserParams: FileChooserParams?
                 ): Boolean {
+
                     this@MainActivity.filePathCallback?.onReceiveValue(null)
                     this@MainActivity.filePathCallback = filePathCallback
 
-                    val intent = Intent(Intent.ACTION_GET_CONTENT)
-                    intent.addCategory(Intent.CATEGORY_OPENABLE)
-                    intent.type = "image/*"
-                    startActivityForResult(
-                        Intent.createChooser(intent, "사진 선택"),
-                        FILE_CHOOSER_REQUEST_CODE
-                    )
+                    // 카메라 인텐트
+                    val cameraIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                    var cameraUri: Uri? = null
+
+                    // 촬영 이미지 임시 저장경로 만들기
+                    val photoFile = kotlin.runCatching {
+                        File.createTempFile("camera_", ".jpg", cacheDir)
+                    }.getOrNull()
+
+                    photoFile?.also {
+                        cameraUri = FileProvider.getUriForFile(
+                            this@MainActivity,
+                            "${packageName}.provider",
+                            it
+                        )
+                        cameraIntent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraUri)
+                    }
+
+                    // 갤러리 인텐트
+                    val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+
+                    // 선택 UI
+                    val chooserIntent = Intent(Intent.ACTION_CHOOSER).apply {
+                        putExtra(Intent.EXTRA_INTENT, galleryIntent)
+                        putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                    }
+
+                    startActivityForResult(chooserIntent, FILE_CHOOSER_REQUEST_CODE)
                     return true
                 }
             }
 
             handleIntent(intent)
         }
-
+        swipe.setOnChildScrollUpCallback { _, _ ->
+            // true = 아직 스크롤이 위가 아님 → SwipeRefresh 비활성화
+            // false = 맨 위 → SwipeRefresh 가능
+            return@setOnChildScrollUpCallback lastScrollTop > 0
+        }
         // 알림 권한 요청 (Android 13 이상)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST_CODE)
@@ -183,7 +270,70 @@ class MainActivity : AppCompatActivity() {
             this.fcmToken = token
             sendTokenToWebView(token)
         }
+        onBackPressedDispatcher.addCallback(this) {
+            if (binding.webView.canGoBack()) {
+                binding.webView.goBack()
+            } else {
+                // 기존의 back 동작 수행
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+            }
+        }
     }
+    private fun handleUrl(url: String): Boolean {
+        // 네트워크 URL 이면 WebView가 그대로 로딩하게 false
+        if (URLUtil.isNetworkUrl(url) || URLUtil.isJavaScriptUrl(url)) {
+            return false
+        }
+
+        // 딥링크 / 스킴 처리
+        val uri = try {
+            Uri.parse(url)
+        } catch (e: Exception) {
+            return false
+        }
+
+        return when (uri.scheme) {
+            "intent" -> {
+                startSchemeIntent(url)
+            }
+
+            else -> {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }
+    }
+
+    private fun startSchemeIntent(url: String): Boolean {
+        val schemeIntent: Intent = try {
+            Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+        } catch (e: Exception) {
+            return false
+        }
+
+        try {
+            startActivity(schemeIntent)
+            return true
+        } catch (e: ActivityNotFoundException) {
+            val packageName = schemeIntent.`package`
+            if (!packageName.isNullOrBlank()) {
+                startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("market://details?id=$packageName")
+                    )
+                )
+                return true
+            }
+        }
+        return false
+    }
+
     private fun handleIntent(intent: Intent?) {
         // 기본 경로는 "/" 또는 "" (승호의 웹 라우터 설정에 맞게!)
         var path = "/"
@@ -204,15 +354,6 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
-    }
-
-    // 뒤로가기 버튼 처리
-    override fun onBackPressed() {
-        if (binding.webView.canGoBack()) {
-            binding.webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
     }
 
     // 갤러리(파일 선택) 결과 처리
